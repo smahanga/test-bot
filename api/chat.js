@@ -93,8 +93,8 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured." });
+  const apiKey = process.env.GOOGLE_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "GOOGLE_API_KEY not configured." });
 
   try {
     // Support both OpenAI-style and simple format requests
@@ -114,18 +114,25 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Send { message: '...' } or { messages: [...] }" });
     }
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const geminiMessages = messages.map(m => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: Array.isArray(m.content) ? m.content.join("\n") : String(m.content || "") }]
+    }));
+
+    const model = process.env.GEMINI_MODEL || "gemini-flash-preview";
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01"
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1024,
-        system: BREWMIND_SYSTEM_PROMPT,
-        messages
+        systemInstruction: {
+          parts: [{ text: BREWMIND_SYSTEM_PROMPT }]
+        },
+        generationConfig: {
+          maxOutputTokens: 1024
+        },
+        contents: geminiMessages
       })
     });
 
@@ -135,7 +142,7 @@ export default async function handler(req, res) {
     }
 
     const data = await response.json();
-    const reply = data.content.map(b => b.type === "text" ? b.text : "").filter(Boolean).join("\n");
+    const reply = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").filter(Boolean).join("\n") || "";
 
     // Return in multiple formats so any client can use it
     return res.status(200).json({
@@ -144,8 +151,8 @@ export default async function handler(req, res) {
       message: reply,
       // Also include OpenAI-compatible format
       choices: [{ message: { role: "assistant", content: reply } }],
-      // And raw Anthropic format
-      content: data.content
+      // And raw Gemini format
+      content: data?.candidates?.[0]?.content?.parts || []
     });
 
   } catch (error) {
