@@ -75,7 +75,7 @@ GEMINI_MODEL=gemini-1.5-flash
 5. For Vercel deployment, add the same variables in **Project Settings → Environment Variables**.
 6. Redeploy the app after setting variables.
 
-> Note: If you still set `GEMINI_MODEL=gemini-flash-preview`, the API now auto-maps it to a supported Flash model and falls back to other Flash variants if needed.
+> Note: If you still set `GEMINI_MODEL=gemini-flash-preview`, the API auto-maps it to a supported Flash model, checks available `generateContent` models, and falls back to other Flash variants if needed.
 
 You can test the API locally after starting Vite/Vercel dev with:
 

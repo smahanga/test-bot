@@ -13,18 +13,41 @@ function normalizeModelName(model) {
   return MODEL_ALIASES[model] || model;
 }
 
+async function getAvailableGenerateContentModels(apiKey) {
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    return (data.models || [])
+      .filter(model => (model.supportedGenerationMethods || []).includes("generateContent"))
+      .map(model => (model.name || "").replace("models/", ""))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 async function callGeminiWithFallback({ apiKey, requestedModel, body }) {
   const normalizedRequestedModel = normalizeModelName(requestedModel);
-  const candidateModels = [
+  const preferredModels = [
     normalizedRequestedModel,
     "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-flash-8b"
-  ].filter((value, index, arr) => value && arr.indexOf(value) === index);
+  ];
+
+  const availableModels = await getAvailableGenerateContentModels(apiKey);
+  const candidateModels = availableModels.length
+    ? preferredModels.filter(model => availableModels.includes(model))
+    : preferredModels;
+
+  const dedupedCandidateModels = (candidateModels.length ? candidateModels : preferredModels)
+    .filter((value, index, arr) => value && arr.indexOf(value) === index);
 
   let lastError = null;
 
-  for (const model of candidateModels) {
+  for (const model of dedupedCandidateModels) {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: {
