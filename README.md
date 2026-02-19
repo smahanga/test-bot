@@ -13,8 +13,9 @@ A customer support chatbot for **BrewMind** — a fictional AI-powered smart cof
 
 1. Push this code to a GitHub repo (`brewmind-bot`)
 2. Go to [vercel.com](https://vercel.com) → **Add New Project** → Import the repo
-3. Add environment variable: `ANTHROPIC_API_KEY` = your key
-4. Click **Deploy**
+3. Add environment variable: `GOOGLE_API_KEY` = your Google AI Studio API key
+4. (Optional) Add `GEMINI_MODEL` = `gemini-1.5-flash` (recommended default)
+5. Click **Deploy**
 
 Your bot will be live at `https://brewmind-bot.vercel.app`
 
@@ -57,3 +58,29 @@ brewmind-bot/
 ---
 
 Built by Shraddha Mahangare · MSIS 549
+
+
+## Google API Key Setup (Gemini Flash)
+
+1. Go to Google AI Studio: https://aistudio.google.com/app/apikey
+2. Create or select a Google Cloud project when prompted.
+3. Click **Create API key** and copy the key value.
+4. For local development, create a `.env.local` file in the project root:
+
+```bash
+GOOGLE_API_KEY=your_google_api_key_here
+GEMINI_MODEL=gemini-1.5-flash
+```
+
+5. For Vercel deployment, add the same variables in **Project Settings → Environment Variables**.
+6. Redeploy the app after setting variables.
+
+> Note: If you still set `GEMINI_MODEL=gemini-flash-preview`, the API now auto-maps it to a supported Flash model and falls back to other Flash variants if needed.
+
+You can test the API locally after starting Vite/Vercel dev with:
+
+```bash
+curl -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"What plans do you offer?"}'
+```
