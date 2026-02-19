@@ -3,6 +3,111 @@
 // 1. Direct chat from the web interface
 // 2. External API calls from SynthEvaluation
 
+
+
+const MODEL_ALIASES = {
+  "gemini-flash-preview": "gemini-1.5-flash"
+};
+
+function normalizeModelName(model) {
+  return MODEL_ALIASES[model] || model;
+}
+
+async function getAvailableGenerateContentModels(apiKey) {
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    return (data.models || [])
+      .filter(model => (model.supportedGenerationMethods || []).includes("generateContent"))
+      .map(model => (model.name || "").replace("models/", ""))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+
+
+function parseGeminiError(errText) {
+  try {
+    return JSON.parse(errText);
+  } catch {
+    return null;
+  }
+}
+
+function formatGeminiError({ status, errText, model }) {
+  const parsed = parseGeminiError(errText);
+  const message = parsed?.error?.message;
+  const retryDelay = parsed?.error?.details?.find(d => d?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo')?.retryDelay;
+
+  if (status === 429) {
+    return {
+      status,
+      code: 'RATE_LIMITED',
+      message: `Gemini quota/rate limit reached for model ${model}. ${retryDelay ? `Retry after ${retryDelay}. ` : ''}Check your Google AI quota/billing or set GEMINI_MODEL to gemini-1.5-flash.`,
+      providerMessage: message || errText,
+      retryDelay,
+      model
+    };
+  }
+
+  return {
+    status,
+    code: 'GEMINI_API_ERROR',
+    message: message || errText || 'Gemini request failed.',
+    providerMessage: message || errText,
+    model
+  };
+}
+
+async function callGeminiWithFallback({ apiKey, requestedModel, body }) {
+  const normalizedRequestedModel = normalizeModelName(requestedModel);
+  const preferredModels = [
+    normalizedRequestedModel,
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b"
+  ];
+
+  const availableModels = await getAvailableGenerateContentModels(apiKey);
+  const candidateModels = availableModels.length
+    ? preferredModels.filter(model => availableModels.includes(model))
+    : preferredModels;
+
+  const dedupedCandidateModels = (candidateModels.length ? candidateModels : preferredModels)
+    .filter((value, index, arr) => value && arr.indexOf(value) === index);
+
+  let lastError = null;
+
+  for (const model of dedupedCandidateModels) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (response.ok) {
+      return { response, model };
+    }
+
+    const errText = await response.text();
+    lastError = { status: response.status, errText, model };
+
+    // If model name is invalid/unavailable or this model is quota-limited, try next fallback model.
+    if (response.status === 404 || response.status === 429) {
+      continue;
+    }
+
+    // For other errors, fail immediately (auth, malformed input, etc.).
+    return { response: null, model, error: lastError };
+  }
+
+  return { response: null, model: normalizedRequestedModel, error: lastError };
+}
 const BREWMIND_SYSTEM_PROMPT = `You are "Beanbot," the friendly customer support assistant for BrewMind — an AI-powered smart coffee subscription service.
 
 ═══════════════════════════════════════
@@ -93,8 +198,8 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured." });
+  const apiKey = process.env.GOOGLE_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "GOOGLE_API_KEY not configured." });
 
   try {
     // Support both OpenAI-style and simple format requests
@@ -114,28 +219,47 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Send { message: '...' } or { messages: [...] }" });
     }
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01"
+    const geminiMessages = messages.map(m => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: Array.isArray(m.content) ? m.content.join("\n") : String(m.content || "") }]
+    }));
+
+    const requestedModel = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+    const requestBody = {
+      systemInstruction: {
+        parts: [{ text: BREWMIND_SYSTEM_PROMPT }]
       },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1024,
-        system: BREWMIND_SYSTEM_PROMPT,
-        messages
-      })
+      generationConfig: {
+        maxOutputTokens: 1024
+      },
+      contents: geminiMessages
+    };
+
+    const { response, model, error } = await callGeminiWithFallback({
+      apiKey,
+      requestedModel,
+      body: requestBody
     });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ error: errText });
+    if (!response) {
+      const formattedError = formatGeminiError({
+        status: error?.status || 500,
+        errText: error?.errText || "Gemini request failed.",
+        model
+      });
+
+      return res.status(formattedError.status || 500).json({
+        error: formattedError.message,
+        code: formattedError.code,
+        requestedModel,
+        attemptedModel: model,
+        retryDelay: formattedError.retryDelay,
+        providerMessage: formattedError.providerMessage
+      });
     }
 
     const data = await response.json();
-    const reply = data.content.map(b => b.type === "text" ? b.text : "").filter(Boolean).join("\n");
+    const reply = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").filter(Boolean).join("\n") || "";
 
     // Return in multiple formats so any client can use it
     return res.status(200).json({
@@ -144,8 +268,9 @@ export default async function handler(req, res) {
       message: reply,
       // Also include OpenAI-compatible format
       choices: [{ message: { role: "assistant", content: reply } }],
-      // And raw Anthropic format
-      content: data.content
+      // And raw Gemini format
+      content: data?.candidates?.[0]?.content?.parts || [],
+      usedModel: model
     });
 
   } catch (error) {
