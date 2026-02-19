@@ -67,6 +67,7 @@ async function callGeminiWithFallback({ apiKey, requestedModel, body }) {
   const normalizedRequestedModel = normalizeModelName(requestedModel);
   const preferredModels = [
     normalizedRequestedModel,
+    "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-flash-8b"
   ];
@@ -103,6 +104,12 @@ async function callGeminiWithFallback({ apiKey, requestedModel, body }) {
     }
 
     // For other errors, fail immediately (auth, malformed input, etc.).
+    // If model name is invalid / unavailable, try next fallback model.
+    if (response.status === 404) {
+      continue;
+    }
+
+    // For non-404 errors, fail immediately (auth, quota, malformed input, etc.).
     return { response: null, model, error: lastError };
   }
 
@@ -232,6 +239,10 @@ export default async function handler(req, res) {
       generationConfig: {
         maxOutputTokens: 1024
       },
+      },
+      generationConfig: {
+        maxOutputTokens: 1024
+      },
       contents: geminiMessages
     };
 
@@ -255,6 +266,10 @@ export default async function handler(req, res) {
         attemptedModel: model,
         retryDelay: formattedError.retryDelay,
         providerMessage: formattedError.providerMessage
+      return res.status(error?.status || 500).json({
+        error: error?.errText || "Gemini request failed.",
+        requestedModel,
+        attemptedModel: model
       });
     }
 
