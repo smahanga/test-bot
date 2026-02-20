@@ -119,6 +119,21 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!apiKey) return res.status(500).json({ error: "GOOGLE_API_KEY not configured." });
 
+  // Auth check: require Basic auth if BOT_USERNAME and BOT_PASSWORD are set
+  const expectedUser = process.env.BOT_USERNAME;
+  const expectedPass = process.env.BOT_PASSWORD;
+  if (expectedUser && expectedPass) {
+    const authHeader = req.headers.authorization || "";
+    if (!authHeader.startsWith("Basic ")) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const decoded = Buffer.from(authHeader.slice(6), "base64").toString();
+    const [user, pass] = decoded.split(":");
+    if (user !== expectedUser || pass !== expectedPass) {
+      return res.status(401).json({ error: "Invalid username or password." });
+    }
+  }
+
   try {
     // Support both OpenAI-style and simple format requests
     let messages;

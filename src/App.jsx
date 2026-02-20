@@ -1,19 +1,97 @@
 import { useState, useRef, useEffect } from "react";
 
+const DAILY_LIMIT = 20;
+
+function getTodayKey() {
+  return `brewmind_msgs_${new Date().toISOString().slice(0, 10)}`;
+}
+
+function getDailyCount() {
+  return parseInt(localStorage.getItem(getTodayKey()) || "0", 10);
+}
+
+function incrementDailyCount() {
+  const key = getTodayKey();
+  const count = parseInt(localStorage.getItem(key) || "0", 10) + 1;
+  localStorage.setItem(key, String(count));
+  return count;
+}
+
+function getStoredAuth() {
+  const raw = sessionStorage.getItem("brewmind_auth");
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
 export default function BrewMindChat() {
+  const [auth, setAuth] = useState(getStoredAuth);
+  const [loginUser, setLoginUser] = useState("");
+  const [loginPass, setLoginPass] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+
   const [messages, setMessages] = useState([
     { role: "assistant", content: "Hey there! ☕ Welcome to BrewMind support. I'm Beanbot — your friendly coffee assistant. How can I help you today?" }
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [msgCount, setMsgCount] = useState(getDailyCount());
   const scrollRef = useRef(null);
+
+  const remaining = DAILY_LIMIT - msgCount;
+  const limitReached = remaining <= 0;
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  const makeAuthHeader = (u, p) => "Basic " + btoa(`${u}:${p}`);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    if (!loginUser.trim() || !loginPass.trim()) return;
+    setLoginLoading(true);
+    setLoginError("");
+
+    try {
+      const resp = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": makeAuthHeader(loginUser, loginPass)
+        },
+        body: JSON.stringify({ message: "hello" })
+      });
+
+      if (resp.status === 401) {
+        const data = await resp.json();
+        setLoginError(data.error || "Invalid credentials.");
+        setLoginLoading(false);
+        return;
+      }
+
+      // Auth succeeded
+      const creds = { username: loginUser, password: loginPass };
+      sessionStorage.setItem("brewmind_auth", JSON.stringify(creds));
+      setAuth(creds);
+    } catch {
+      setLoginError("Could not connect to server.");
+    }
+    setLoginLoading(false);
+  };
+
+  const handleLogout = () => {
+    sessionStorage.removeItem("brewmind_auth");
+    setAuth(null);
+    setLoginUser("");
+    setLoginPass("");
+    setMessages([
+      { role: "assistant", content: "Hey there! ☕ Welcome to BrewMind support. I'm Beanbot — your friendly coffee assistant. How can I help you today?" }
+    ]);
+  };
+
   const sendMessage = async () => {
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || limitReached) return;
     const userMsg = input.trim();
     setInput("");
     setMessages(prev => [...prev, { role: "user", content: userMsg }]);
@@ -22,14 +100,23 @@ export default function BrewMindChat() {
     try {
       const resp = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": makeAuthHeader(auth.username, auth.password)
+        },
         body: JSON.stringify({
           messages: [...messages, { role: "user", content: userMsg }]
         })
       });
       const data = await resp.json();
+      if (resp.status === 401) {
+        handleLogout();
+        return;
+      }
       if (!resp.ok) throw new Error(data.error || "Something went wrong");
       setMessages(prev => [...prev, { role: "assistant", content: data.reply }]);
+      const newCount = incrementDailyCount();
+      setMsgCount(newCount);
     } catch (err) {
       setMessages(prev => [...prev, { role: "assistant", content: `Oops! Something went wrong: ${err.message}. Please try again.` }]);
     }
@@ -43,6 +130,59 @@ export default function BrewMindChat() {
     "Where's my order?"
   ];
 
+  // ─── Login Screen ───
+  if (!auth) {
+    return (
+      <div style={styles.root}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
+        <div style={styles.header}>
+          <div style={styles.logo}>
+            <span style={{ fontSize: 28 }}>☕</span>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5 }}>BrewMind</div>
+              <div style={{ fontSize: 11, color: "#A0785A", fontWeight: 500 }}>Smart Coffee, Delivered</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <form onSubmit={handleLogin} style={styles.loginCard}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>☕</div>
+            <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>Sign in to Beanbot</div>
+            <div style={{ fontSize: 13, color: "#8B7355", marginBottom: 20 }}>
+              Enter your credentials to access support chat.
+            </div>
+            {loginError && (
+              <div style={styles.loginError}>{loginError}</div>
+            )}
+            <input
+              value={loginUser}
+              onChange={e => setLoginUser(e.target.value)}
+              placeholder="Username"
+              autoComplete="username"
+              style={{ ...styles.input, marginBottom: 10, width: "100%" }}
+            />
+            <input
+              type="password"
+              value={loginPass}
+              onChange={e => setLoginPass(e.target.value)}
+              placeholder="Password"
+              autoComplete="current-password"
+              style={{ ...styles.input, marginBottom: 16, width: "100%" }}
+            />
+            <button
+              type="submit"
+              disabled={loginLoading || !loginUser.trim() || !loginPass.trim()}
+              style={{ ...styles.sendBtn, width: "100%", padding: "12px", opacity: (loginLoading || !loginUser.trim() || !loginPass.trim()) ? 0.5 : 1 }}
+            >
+              {loginLoading ? "Signing in..." : "Sign In"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Chat Screen ───
   return (
     <div style={styles.root}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
@@ -56,9 +196,12 @@ export default function BrewMindChat() {
             <div style={{ fontSize: 11, color: "#A0785A", fontWeight: 500 }}>Smart Coffee, Delivered</div>
           </div>
         </div>
-        <div style={styles.statusBadge}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ADE80", display: "inline-block" }}></span>
-          Beanbot Online
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={styles.statusBadge}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ADE80", display: "inline-block" }}></span>
+            {remaining}/{DAILY_LIMIT} messages
+          </div>
+          <button onClick={handleLogout} style={styles.logoutBtn}>Logout</button>
         </div>
       </div>
 
@@ -106,19 +249,25 @@ export default function BrewMindChat() {
 
       {/* Input */}
       <div style={styles.inputArea}>
-        <div style={styles.inputRow}>
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && sendMessage()}
-            placeholder="Ask Beanbot anything..."
-            style={styles.input}
-          />
-          <button onClick={sendMessage} disabled={loading || !input.trim()}
-            style={{ ...styles.sendBtn, opacity: (loading || !input.trim()) ? 0.4 : 1 }}>
-            Send
-          </button>
-        </div>
+        {limitReached ? (
+          <div style={{ textAlign: "center", padding: "12px 0", color: "#A0785A", fontWeight: 600, fontSize: 14 }}>
+            You've reached your daily limit of {DAILY_LIMIT} messages. Please come back tomorrow!
+          </div>
+        ) : (
+          <div style={styles.inputRow}>
+            <input
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && sendMessage()}
+              placeholder="Ask Beanbot anything..."
+              style={styles.input}
+            />
+            <button onClick={sendMessage} disabled={loading || !input.trim()}
+              style={{ ...styles.sendBtn, opacity: (loading || !input.trim()) ? 0.4 : 1 }}>
+              Send
+            </button>
+          </div>
+        )}
         <div style={{ textAlign: "center", fontSize: 11, color: "#C4A882", marginTop: 8 }}>
           BrewMind Support Bot · Powered by AI · Responses may not always be accurate
         </div>
@@ -173,6 +322,17 @@ const styles = {
     padding: "5px 12px",
     borderRadius: 20
   },
+  logoutBtn: {
+    padding: "5px 14px",
+    borderRadius: 20,
+    border: "1px solid #6B5744",
+    background: "transparent",
+    color: "#C4A882",
+    fontFamily: "'DM Sans'",
+    fontSize: 12,
+    fontWeight: 500,
+    cursor: "pointer"
+  },
   chatArea: {
     flex: 1,
     overflowY: "auto",
@@ -191,10 +351,28 @@ const styles = {
     border: "1px solid #E8DDD0",
     boxShadow: "0 2px 8px rgba(61,46,31,0.06)"
   },
+  loginCard: {
+    textAlign: "center",
+    background: "#fff",
+    borderRadius: 16,
+    padding: "36px 32px",
+    width: 340,
+    border: "1px solid #E8DDD0",
+    boxShadow: "0 2px 8px rgba(61,46,31,0.06)"
+  },
+  loginError: {
+    background: "#FEF2F2",
+    color: "#B91C1C",
+    border: "1px solid #FECACA",
+    borderRadius: 8,
+    padding: "8px 12px",
+    fontSize: 13,
+    marginBottom: 12
+  },
   quickBtn: {
     padding: "7px 14px",
     borderRadius: 20,
-    border: "1px solid #D4C4AD",
+    border: "1px solid #D4C4Ad",
     background: "#FBF7F2",
     color: "#6B5744",
     fontFamily: "'DM Sans'",
