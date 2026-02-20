@@ -85,9 +85,9 @@ YOUR BEHAVIOR RULES
 10. Always end interactions by asking if there's anything else you can help with`;
 
 const FALLBACK_MODELS = [
+  "gemini-2.5-flash",
   "gemini-2.0-flash",
-  "gemini-2.5-flash-preview-05-20",
-  "gemini-1.5-pro"
+  "gemini-2.0-flash-lite"
 ];
 
 export default async function handler(req, res) {
@@ -154,7 +154,7 @@ export default async function handler(req, res) {
     };
 
     // Try models in order, falling back on 404/429
-    const requestedModel = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const requestedModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
     const modelsToTry = [requestedModel, ...FALLBACK_MODELS.filter(m => m !== requestedModel)];
 
     let lastError = null;
