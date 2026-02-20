@@ -86,20 +86,37 @@ YOUR BEHAVIOR RULES
 
 const FALLBACK_MODELS = [
   "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
-  "gemini-1.5-flash"
+  "gemini-2.5-flash-preview-05-20",
+  "gemini-1.5-pro"
 ];
 
 export default async function handler(req, res) {
   // CORS headers for external API calls (from SynthEvaluation)
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const apiKey = process.env.GOOGLE_API_KEY;
+
+  // GET = diagnostic: list available models
+  if (req.method === "GET") {
+    if (!apiKey) return res.status(500).json({ error: "GOOGLE_API_KEY not configured." });
+    try {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+      const data = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ error: data });
+      const models = (data.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+        .map(m => m.name.replace("models/", ""));
+      return res.status(200).json({ availableModels: models, count: models.length });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!apiKey) return res.status(500).json({ error: "GOOGLE_API_KEY not configured." });
 
   try {
