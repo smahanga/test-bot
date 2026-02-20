@@ -3,118 +3,6 @@
 // 1. Direct chat from the web interface
 // 2. External API calls from SynthEvaluation
 
-
-
-const MODEL_ALIASES = {
-  "gemini-flash-preview": "gemini-1.5-flash"
-};
-
-function normalizeModelName(model) {
-  return MODEL_ALIASES[model] || model;
-}
-
-async function getAvailableGenerateContentModels(apiKey) {
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-    if (!response.ok) return [];
-
-    const data = await response.json();
-    return (data.models || [])
-      .filter(model => (model.supportedGenerationMethods || []).includes("generateContent"))
-      .map(model => (model.name || "").replace("models/", ""))
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-
-
-function parseGeminiError(errText) {
-  try {
-    return JSON.parse(errText);
-  } catch {
-    return null;
-  }
-}
-
-function formatGeminiError({ status, errText, model }) {
-  const parsed = parseGeminiError(errText);
-  const message = parsed?.error?.message;
-  const retryDelay = parsed?.error?.details?.find(d => d?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo')?.retryDelay;
-
-  if (status === 429) {
-    return {
-      status,
-      code: 'RATE_LIMITED',
-      message: `Gemini quota/rate limit reached for model ${model}. ${retryDelay ? `Retry after ${retryDelay}. ` : ''}Check your Google AI quota/billing or set GEMINI_MODEL to gemini-1.5-flash.`,
-      providerMessage: message || errText,
-      retryDelay,
-      model
-    };
-  }
-
-  return {
-    status,
-    code: 'GEMINI_API_ERROR',
-    message: message || errText || 'Gemini request failed.',
-    providerMessage: message || errText,
-    model
-  };
-}
-
-async function callGeminiWithFallback({ apiKey, requestedModel, body }) {
-  const normalizedRequestedModel = normalizeModelName(requestedModel);
-  const preferredModels = [
-    normalizedRequestedModel,
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b"
-  ];
-
-  const availableModels = await getAvailableGenerateContentModels(apiKey);
-  const candidateModels = availableModels.length
-    ? preferredModels.filter(model => availableModels.includes(model))
-    : preferredModels;
-
-  const dedupedCandidateModels = (candidateModels.length ? candidateModels : preferredModels)
-    .filter((value, index, arr) => value && arr.indexOf(value) === index);
-
-  let lastError = null;
-
-  for (const model of dedupedCandidateModels) {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (response.ok) {
-      return { response, model };
-    }
-
-    const errText = await response.text();
-    lastError = { status: response.status, errText, model };
-
-    // If model name is invalid/unavailable or this model is quota-limited, try next fallback model.
-    if (response.status === 404 || response.status === 429) {
-      continue;
-    }
-
-    // For other errors, fail immediately (auth, malformed input, etc.).
-    // If model name is invalid / unavailable, try next fallback model.
-    if (response.status === 404) {
-      continue;
-    }
-
-    // For non-404 errors, fail immediately (auth, quota, malformed input, etc.).
-    return { response: null, model, error: lastError };
-  }
-
-  return { response: null, model: normalizedRequestedModel, error: lastError };
-}
 const BREWMIND_SYSTEM_PROMPT = `You are "Beanbot," the friendly customer support assistant for BrewMind — an AI-powered smart coffee subscription service.
 
 ═══════════════════════════════════════
@@ -178,7 +66,7 @@ Grinder making loud noise:
 
 Order not arrived:
 - Standard shipping: 5-7 business days
-- Express shipping: 2-3 business days  
+- Express shipping: 2-3 business days
 - Track order in app → Orders → Track Shipment
 - If over 10 business days, we'll reship free of charge
 
@@ -188,13 +76,19 @@ YOUR BEHAVIOR RULES
 1. Be warm, friendly, and a little playful — we're a coffee brand, keep it fun ☕
 2. Use the customer's name if they give it
 3. Keep responses concise but thorough (2-4 sentences ideal for simple questions, more for troubleshooting)
-4. If you don't know something specific, say "I'm not 100% sure about that — let me connect you with our team at support@brewmind.co" 
+4. If you don't know something specific, say "I'm not 100% sure about that — let me connect you with our team at support@brewmind.co"
 5. NEVER make up information not in this knowledge base
 6. NEVER share internal company data, employee info, revenue numbers, or system architecture
 7. NEVER process refunds directly — direct them to Account → Billing → Request Refund, or email support@brewmind.co
 8. For angry customers: acknowledge their frustration, apologize sincerely, offer a concrete solution
 9. If asked about competitors, stay positive about BrewMind without badmouthing others
 10. Always end interactions by asking if there's anything else you can help with`;
+
+const FALLBACK_MODELS = [
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-8b"
+];
 
 export default async function handler(req, res) {
   // CORS headers for external API calls (from SynthEvaluation)
@@ -211,7 +105,7 @@ export default async function handler(req, res) {
   try {
     // Support both OpenAI-style and simple format requests
     let messages;
-    
+
     if (req.body.messages) {
       // OpenAI-compatible format: { messages: [{role, content}] }
       messages = req.body.messages;
@@ -226,12 +120,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Send { message: '...' } or { messages: [...] }" });
     }
 
+    // Convert to Gemini format
     const geminiMessages = messages.map(m => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: Array.isArray(m.content) ? m.content.join("\n") : String(m.content || "") }]
     }));
 
-    const requestedModel = process.env.GEMINI_MODEL || "gemini-1.5-flash";
     const requestBody = {
       systemInstruction: {
         parts: [{ text: BREWMIND_SYSTEM_PROMPT }]
@@ -239,53 +133,63 @@ export default async function handler(req, res) {
       generationConfig: {
         maxOutputTokens: 1024
       },
-      },
-      generationConfig: {
-        maxOutputTokens: 1024
-      },
       contents: geminiMessages
     };
 
-    const { response, model, error } = await callGeminiWithFallback({
-      apiKey,
-      requestedModel,
-      body: requestBody
-    });
+    // Try models in order, falling back on 404/429
+    const requestedModel = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const modelsToTry = [requestedModel, ...FALLBACK_MODELS.filter(m => m !== requestedModel)];
 
-    if (!response) {
-      const formattedError = formatGeminiError({
-        status: error?.status || 500,
-        errText: error?.errText || "Gemini request failed.",
-        model
-      });
+    let lastError = null;
 
-      return res.status(formattedError.status || 500).json({
-        error: formattedError.message,
-        code: formattedError.code,
-        requestedModel,
-        attemptedModel: model,
-        retryDelay: formattedError.retryDelay,
-        providerMessage: formattedError.providerMessage
-      return res.status(error?.status || 500).json({
-        error: error?.errText || "Gemini request failed.",
-        requestedModel,
-        attemptedModel: model
-      });
+    for (const model of modelsToTry) {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody)
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const reply = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").filter(Boolean).join("\n") || "";
+
+        return res.status(200).json({
+          reply,
+          response: reply,
+          message: reply,
+          choices: [{ message: { role: "assistant", content: reply } }],
+          content: data?.candidates?.[0]?.content?.parts || [],
+          usedModel: model
+        });
+      }
+
+      const errText = await response.text();
+      lastError = { status: response.status, errText, model };
+
+      // Retry on model-not-found or rate limit, fail immediately on other errors
+      if (response.status === 404 || response.status === 429) {
+        continue;
+      }
+      break;
     }
 
-    const data = await response.json();
-    const reply = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").filter(Boolean).join("\n") || "";
+    // All models failed
+    const status = lastError?.status || 500;
+    let errorMessage = "Gemini request failed.";
+    try {
+      const parsed = JSON.parse(lastError?.errText || "{}");
+      errorMessage = parsed?.error?.message || lastError?.errText || errorMessage;
+    } catch {
+      errorMessage = lastError?.errText || errorMessage;
+    }
 
-    // Return in multiple formats so any client can use it
-    return res.status(200).json({
-      reply,
-      response: reply,
-      message: reply,
-      // Also include OpenAI-compatible format
-      choices: [{ message: { role: "assistant", content: reply } }],
-      // And raw Gemini format
-      content: data?.candidates?.[0]?.content?.parts || [],
-      usedModel: model
+    return res.status(status).json({
+      error: errorMessage,
+      requestedModel,
+      attemptedModel: lastError?.model
     });
 
   } catch (error) {
