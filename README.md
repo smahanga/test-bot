@@ -84,3 +84,13 @@ curl -X POST http://localhost:3000/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"What plans do you offer?"}'
 ```
+
+
+## Troubleshooting: 429 Quota Exceeded
+
+If you see a `429 RESOURCE_EXHAUSTED` error:
+
+1. Confirm billing/quota in Google AI Studio and Google Cloud.
+2. Set `GEMINI_MODEL=gemini-1.5-flash` (recommended for broad availability).
+3. Wait for the retry window (the API may return a `retryDelay`) and try again.
+4. If you use Vercel, redeploy after environment variable changes.

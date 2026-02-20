@@ -28,6 +28,41 @@ async function getAvailableGenerateContentModels(apiKey) {
   }
 }
 
+
+
+function parseGeminiError(errText) {
+  try {
+    return JSON.parse(errText);
+  } catch {
+    return null;
+  }
+}
+
+function formatGeminiError({ status, errText, model }) {
+  const parsed = parseGeminiError(errText);
+  const message = parsed?.error?.message;
+  const retryDelay = parsed?.error?.details?.find(d => d?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo')?.retryDelay;
+
+  if (status === 429) {
+    return {
+      status,
+      code: 'RATE_LIMITED',
+      message: `Gemini quota/rate limit reached for model ${model}. ${retryDelay ? `Retry after ${retryDelay}. ` : ''}Check your Google AI quota/billing or set GEMINI_MODEL to gemini-1.5-flash.`,
+      providerMessage: message || errText,
+      retryDelay,
+      model
+    };
+  }
+
+  return {
+    status,
+    code: 'GEMINI_API_ERROR',
+    message: message || errText || 'Gemini request failed.',
+    providerMessage: message || errText,
+    model
+  };
+}
+
 async function callGeminiWithFallback({ apiKey, requestedModel, body }) {
   const normalizedRequestedModel = normalizeModelName(requestedModel);
   const preferredModels = [
@@ -63,6 +98,12 @@ async function callGeminiWithFallback({ apiKey, requestedModel, body }) {
     const errText = await response.text();
     lastError = { status: response.status, errText, model };
 
+    // If model name is invalid/unavailable or this model is quota-limited, try next fallback model.
+    if (response.status === 404 || response.status === 429) {
+      continue;
+    }
+
+    // For other errors, fail immediately (auth, malformed input, etc.).
     // If model name is invalid / unavailable, try next fallback model.
     if (response.status === 404) {
       continue;
@@ -198,6 +239,10 @@ export default async function handler(req, res) {
       generationConfig: {
         maxOutputTokens: 1024
       },
+      },
+      generationConfig: {
+        maxOutputTokens: 1024
+      },
       contents: geminiMessages
     };
 
@@ -208,6 +253,19 @@ export default async function handler(req, res) {
     });
 
     if (!response) {
+      const formattedError = formatGeminiError({
+        status: error?.status || 500,
+        errText: error?.errText || "Gemini request failed.",
+        model
+      });
+
+      return res.status(formattedError.status || 500).json({
+        error: formattedError.message,
+        code: formattedError.code,
+        requestedModel,
+        attemptedModel: model,
+        retryDelay: formattedError.retryDelay,
+        providerMessage: formattedError.providerMessage
       return res.status(error?.status || 500).json({
         error: error?.errText || "Gemini request failed.",
         requestedModel,
