@@ -86,8 +86,8 @@ YOUR BEHAVIOR RULES
 
 const FALLBACK_MODELS = [
   "gemini-2.0-flash",
-  "gemini-1.5-flash",
-  "gemini-1.5-flash-8b"
+  "gemini-2.0-flash-lite",
+  "gemini-1.5-flash"
 ];
 
 export default async function handler(req, res) {
@@ -141,6 +141,7 @@ export default async function handler(req, res) {
     const modelsToTry = [requestedModel, ...FALLBACK_MODELS.filter(m => m !== requestedModel)];
 
     let lastError = null;
+    let rateLimitError = null;
 
     for (const model of modelsToTry) {
       const response = await fetch(
@@ -169,6 +170,11 @@ export default async function handler(req, res) {
       const errText = await response.text();
       lastError = { status: response.status, errText, model };
 
+      // Save rate limit errors so we can report them even if a later 404 occurs
+      if (response.status === 429 && !rateLimitError) {
+        rateLimitError = lastError;
+      }
+
       // Retry on model-not-found or rate limit, fail immediately on other errors
       if (response.status === 404 || response.status === 429) {
         continue;
@@ -176,20 +182,23 @@ export default async function handler(req, res) {
       break;
     }
 
+    // Prefer showing rate limit error over a 404 from fallback models
+    const reportedError = rateLimitError || lastError;
+
     // All models failed
-    const status = lastError?.status || 500;
+    const status = reportedError?.status || 500;
     let errorMessage = "Gemini request failed.";
     try {
-      const parsed = JSON.parse(lastError?.errText || "{}");
-      errorMessage = parsed?.error?.message || lastError?.errText || errorMessage;
+      const parsed = JSON.parse(reportedError?.errText || "{}");
+      errorMessage = parsed?.error?.message || reportedError?.errText || errorMessage;
     } catch {
-      errorMessage = lastError?.errText || errorMessage;
+      errorMessage = reportedError?.errText || errorMessage;
     }
 
     return res.status(status).json({
       error: errorMessage,
       requestedModel,
-      attemptedModel: lastError?.model
+      attemptedModel: reportedError?.model
     });
 
   } catch (error) {
