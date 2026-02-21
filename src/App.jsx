@@ -2,6 +2,41 @@ import { useState, useRef, useEffect } from "react";
 
 const DAILY_LIMIT = 20;
 
+// Simple markdown renderer: handles **bold**, *italic*, and line breaks
+function renderMarkdown(text) {
+  if (!text) return text;
+  // Split by lines to handle paragraphs
+  return text.split("\n").map((line, li) => {
+    // Process inline markdown: **bold** and *italic*
+    const parts = [];
+    let remaining = line;
+    let key = 0;
+    while (remaining.length > 0) {
+      // Bold: **text**
+      const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
+      if (boldMatch) {
+        const idx = boldMatch.index;
+        if (idx > 0) parts.push(<span key={key++}>{remaining.slice(0, idx)}</span>);
+        parts.push(<strong key={key++}>{boldMatch[1]}</strong>);
+        remaining = remaining.slice(idx + boldMatch[0].length);
+        continue;
+      }
+      // Italic: *text*
+      const italicMatch = remaining.match(/\*(.+?)\*/);
+      if (italicMatch) {
+        const idx = italicMatch.index;
+        if (idx > 0) parts.push(<span key={key++}>{remaining.slice(0, idx)}</span>);
+        parts.push(<em key={key++}>{italicMatch[1]}</em>);
+        remaining = remaining.slice(idx + italicMatch[0].length);
+        continue;
+      }
+      parts.push(<span key={key++}>{remaining}</span>);
+      break;
+    }
+    return <span key={li}>{parts}{li < text.split("\n").length - 1 && <br />}</span>;
+  });
+}
+
 function getTodayKey() {
   return `brewmind_msgs_${new Date().toISOString().slice(0, 10)}`;
 }
@@ -230,7 +265,7 @@ export default function BrewMindChat() {
           <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
             {m.role === "assistant" && <div style={styles.avatar}>☕</div>}
             <div style={m.role === "user" ? styles.userBubble : styles.botBubble}>
-              {m.content}
+              {m.role === "assistant" ? renderMarkdown(m.content) : m.content}
             </div>
           </div>
         ))}
